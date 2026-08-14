@@ -1,0 +1,380 @@
+# Tercer Caso - Entorno PostgreSQL Containerizado
+
+Descripción
+
+Implementación de un entorno completamente containerizado basado en PostgreSQL utilizando Docker.
+
+El proyecto permite:
+
+* Inicializar una base de datos mediante un archivo `init.sql`.
+* Crear una imagen personalizada de PostgreSQL.
+* Generar backups automáticos cada 2 horas.
+* Guardar los backups en un volumen persistente.
+* Limpiar automáticamente los backups cada 4 horas.
+* Mantener únicamente el backup más reciente.
+* Utilizar una red personalizada tipo `bridge`.
+* Utilizar volúmenes persistentes.
+* Implementar `healthcheck` para PostgreSQL.
+* Utilizar políticas de reinicio.
+* Ejecutar tareas programadas mediante `cron`.
+
+
+# 📁 Estructura del proyecto
+
+```text
+caso-3/
+│
+├── docker-compose.yml
+│
+├── postgres/
+│   ├── Dockerfile
+│   └── init.sql
+│
+├── backup/
+│   ├── Dockerfile
+│   ├── backup.sh
+│   └── backup-cron
+│
+├── cleanup/
+│   ├── Dockerfile
+│   ├── cleanup.sh
+│   └── cleanup-cron
+│
+└── README.md
+```
+
+---
+
+# 🐘 1. Servicio PostgreSQL
+
+## Dockerfile
+
+La imagen personalizada de PostgreSQL se construye a partir de la imagen oficial:
+
+```dockerfile
+FROM postgres:16
+
+COPY init.sql /docker-entrypoint-initdb.d/init.sql
+```
+
+El archivo `init.sql` se copia dentro del directorio:
+
+```text
+/docker-entrypoint-initdb.d/
+```
+
+PostgreSQL ejecuta automáticamente los scripts ubicados en este directorio durante la inicialización de una nueva instancia.
+
+---
+
+## init.sql
+
+El script inicializa la base de datos `escuela`, crea la tabla `alumnos` e inserta registros de prueba.
+
+```sql
+CREATE DATABASE escuela;
+
+\c escuela;
+
+CREATE TABLE alumnos (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    email VARCHAR(150) UNIQUE NOT NULL,
+    fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO alumnos (nombre, email) VALUES
+('Juan Perez', 'juan@escuela.com'),
+('Maria Lopez', 'maria@escuela.com'),
+('Carlos Sanchez', 'carlos@escuela.com'),
+('Ana Torres', 'ana@escuela.com'),
+('Luis Ramirez', 'luis@escuela.com');
+```
+
+---
+
+# 🐳 2. Docker Compose
+
+Docker Compose se utiliza para orquestar los tres servicios:
+
+* PostgreSQL
+* Backup
+* Cleanup
+
+Además, administra:
+
+* Red personalizada.
+* Volúmenes.
+* Puertos.
+* Healthcheck.
+* Restart policies.
+
+La red utilizada es de tipo:
+
+```yaml
+driver: bridge
+```
+
+Los tres servicios utilizan la misma red:
+
+```text
+backend
+```
+
+Esto permite que los contenedores puedan comunicarse entre sí.
+
+Por ejemplo, el servicio Backup puede conectarse a PostgreSQL mediante:
+
+```text
+postgres
+```
+
+en lugar de utilizar `localhost`.
+
+---
+
+# 💾 3. Volúmenes
+
+Se utilizan dos volúmenes persistentes.
+
+## postgres_data
+
+Utilizado para almacenar los datos de PostgreSQL:
+
+```text
+postgres_data:/var/lib/postgresql/data
+```
+
+Esto permite conservar la información de la base de datos aunque el contenedor sea eliminado y recreado.
+
+## backups
+
+Utilizado para almacenar los archivos generados por el servicio de Backup:
+
+```text
+backups:/backups
+```
+
+Este volumen es compartido entre:
+
+```text
+Backup
+   │
+   └── /backups
+
+Cleanup
+   │
+   └── /backups
+```
+
+De esta manera, Cleanup puede acceder a los mismos archivos generados por Backup.
+
+---
+
+# ❤️ 4. Healthcheck
+
+PostgreSQL cuenta con un `healthcheck` utilizando `pg_isready`:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -U admin"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+```
+
+Esto permite verificar que PostgreSQL se encuentre disponible para aceptar conexiones.
+
+El servicio Backup utiliza esta condición antes de iniciar:
+
+```yaml
+depends_on:
+  postgres:
+    condition: service_healthy
+```
+
+---
+
+# 🔄 5. Restart Policy
+
+Los servicios utilizan:
+
+```yaml
+restart: unless-stopped
+```
+
+Esto permite que Docker intente reiniciar los contenedores automáticamente en caso de que se detengan inesperadamente.
+
+---
+
+# 💾 6. Servicio de Backup
+
+El servicio Backup utiliza una imagen personalizada basada en PostgreSQL para disponer de `pg_dump`.
+
+Su estructura es:
+
+```text
+backup/
+├── Dockerfile
+├── backup.sh
+└── backup-cron
+```
+
+## backup.sh
+
+El script utiliza `pg_dump` para generar un respaldo de la base de datos `escuela`.
+
+Los archivos se generan utilizando el siguiente formato:
+
+```text
+backup_YYYYMMDD_HHMMSS.sql
+```
+
+Ejemplo:
+
+```text
+backup_20260814_152907.sql
+```
+
+El backup se almacena en:
+
+```text
+/backups
+```
+
+---
+
+# ⏰ 7. Cron de Backup
+
+El archivo `backup-cron` configura la ejecución automática cada 2 horas:
+
+```cron
+0 */2 * * * root /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
+```
+
+Por lo tanto, el backup se ejecuta:
+
+```text
+00:00
+02:00
+04:00
+06:00
+08:00
+10:00
+...
+```
+
+El servicio Backup no expone ningún puerto.
+
+---
+
+# 🧹 8. Servicio de Cleanup
+
+El servicio Cleanup se encarga de eliminar los backups antiguos.
+
+Su estructura es:
+
+```text
+cleanup/
+├── Dockerfile
+├── cleanup.sh
+└── cleanup-cron
+```
+
+El servicio comparte el volumen:
+
+```text
+backups:/backups
+```
+
+con el servicio Backup.
+
+---
+
+# 🗑️ 9. Limpieza de Backups
+
+El script `cleanup.sh` busca todos los archivos:
+
+```text
+backup_*.sql
+```
+
+Los ordena por fecha de modificación y conserva únicamente el más reciente.
+
+Ejemplo inicial:
+
+```text
+/backups/
+├── backup_20260814_100000.sql
+├── backup_20260814_120000.sql
+├── backup_20260814_140000.sql
+└── backup_20260814_160000.sql
+```
+
+Después de ejecutar Cleanup:
+
+```text
+/backups/
+└── backup_20260814_160000.sql
+```
+
+---
+
+# ⏰ 10. Cron de Cleanup
+
+El archivo `cleanup-cron` configura la ejecución automática cada 4 horas:
+
+```cron
+0 */4 * * * root /usr/local/bin/cleanup.sh >> /var/log/cleanup.log 2>&1
+```
+
+Por lo tanto, la limpieza se ejecuta:
+
+```text
+00:00
+04:00
+08:00
+12:00
+16:00
+20:00
+```
+
+El servicio Cleanup no expone ningún puerto.
+
+---
+
+# 🚀 11. Ejecución del proyecto
+
+## Construir las imágenes
+
+```bash
+docker compose build
+```
+
+También se puede construir y levantar directamente:
+
+```bash
+docker compose up -d --build
+```
+
+## Levantar los servicios
+
+```bash
+docker compose up -d
+```
+
+## Verificar los servicios
+
+```bash
+docker compose ps
+```
+
+Resultado esperado:
+
+```text
+caso3-postgres-1    Up (healthy)
+caso3-backup-1      Up
+caso3-cleanup-1     Up
+```
+
+---
