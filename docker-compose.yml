@@ -1,0 +1,72 @@
+services:
+
+  #servicio de base de datos (inializacion)
+  postgres:
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+
+    environment: 
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+
+    ports:
+      - "5432:5432"
+    
+    networks:
+      - backend
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    restart: unless-stopped
+
+  #servicio de backup
+  backup:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+
+    volumes:
+      - backups:/backups
+
+    networks:
+      - backend
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    restart: unless-stopped
+  
+  #servicio de limpieza
+  cleanup:
+    build:
+      context: ./cleanup
+      dockerfile: Dockerfile
+
+    volumes:
+      - backups:/backups
+
+    networks:
+      - backend
+
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  backups:
+
+networks:
+  backend:
+    driver: bridge
